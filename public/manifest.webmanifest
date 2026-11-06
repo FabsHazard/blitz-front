@@ -1,0 +1,10 @@
+{
+  "name": "Blitz Front",
+  "short_name": "Blitz Front",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#16202b",
+  "theme_color": "#16202b",
+  "start_url": "./index.html",
+  "icons": []
+}
