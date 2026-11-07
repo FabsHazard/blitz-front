@@ -1,7 +1,9 @@
 import {
-  ABILITIES, BALANCE, BUILDINGS, UNITS,
-  type AbilityType, type BuildingType, type UnitType,
+  ABILITIES, BALANCE, BUILDINGS, UNITS, UPGRADES,
+  type AbilityType, type BuildingType, type UnitType, type UpgradeType,
 } from '../sim/data/defs';
+import { canResearchAt } from '../sim/systems/research';
+import type { SoundMode } from './audio';
 import { ONE, TICK_RATE } from '../sim/fixed';
 import { incomePerSecond } from '../sim/systems/economy';
 import { squadCount } from '../sim/systems/production';
@@ -11,7 +13,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 const TRAIN: UnitType[] = ['infantry', 'antitank', 'tank', 'heli'];
 const BUILD: BuildingType[] = ['barracks', 'refinery', 'factory', 'helipad', 'turret'];
-const POWERS: AbilityType[] = ['airstrike', 'artillery', 'paradrop'];
+const SOUND_LABELS: Record<SoundMode, string> = { all: 'Sonido', sfx: 'Sin música', none: 'Silencio' };
 
 interface Slot {
   root: HTMLButtonElement;
@@ -34,8 +36,9 @@ export interface HudActions {
   selectAll(): void;
   retreat(): void;
   clearSelection(): void;
-  toggleMute(): boolean;
+  toggleMute(): SoundMode;
   jumpTo(x: number, z: number): void;
+  upgrade(u: UpgradeType): void;
 }
 
 export class Hud {
@@ -65,8 +68,12 @@ export class Hud {
   private wasUnderdog = false;
   private flipped = false;
   private waiting = $('waiting');
+  private upgradePanel = $('upgrade');
+  private upgradeButton = $<HTMLButtonElement>('upgrade-buy');
+  private upgradeShown: UpgradeType | null = null;
+  private finale = $('finale');
 
-  constructor(thumbs: Map<string, string>, actions: HudActions) {
+  constructor(thumbs: Map<string, string>, private actions: HudActions) {
     for (const type of TRAIN) {
       const s = slot(type, UNITS[type].name, UNITS[type].cost, thumbs.get(type), true);
       s.count = document.createElement('span');
@@ -93,28 +100,20 @@ export class Hud {
       this.bar.append(s.root);
     }
 
-    for (const kind of POWERS) {
-      const root = document.createElement('button');
-      root.className = 'power';
-      root.innerHTML = `<span class="fill"></span><span class="label">${ABILITIES[kind].name}</span><span class="time"></span>`;
-      root.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault();
-        root.releasePointerCapture?.(ev.pointerId);
-        actions.beginAbility(kind, ev.clientX, ev.clientY);
-      });
-      $('abilities').append(root);
-      this.powers.set(kind, {
-        root,
-        fill: root.querySelector('.fill') as HTMLElement,
-        time: root.querySelector('.time') as HTMLElement,
-      });
-    }
+    this.upgradeButton.addEventListener('click', () => {
+      if (this.upgradeShown) actions.upgrade(this.upgradeShown);
+    });
+    $('upgrade-close').addEventListener('click', () => this.hideUpgrade());
 
     $('btn-all').addEventListener('click', actions.selectAll);
     this.retreat.addEventListener('click', actions.retreat);
     this.clear.addEventListener('click', actions.clearSelection);
     const mute = $('btn-mute');
-    mute.addEventListener('click', () => mute.classList.toggle('off', actions.toggleMute()));
+    mute.addEventListener('click', () => {
+      const mode = actions.toggleMute();
+      mute.textContent = SOUND_LABELS[mode];
+      mute.classList.toggle('off', mode === 'none');
+    });
 
     const jump = (ev: PointerEvent) => {
       const r = this.minimap.getBoundingClientRect();
@@ -146,7 +145,74 @@ export class Hud {
     this.hasCaptured = true;
   }
 
-  reset(owner: number, thumbs: Map<string, string>): void {
+  private buildPowers(loadout: AbilityType[]): void {
+    const box = $('abilities');
+    box.replaceChildren();
+    this.powers.clear();
+    for (const kind of loadout) {
+      const root = document.createElement('button');
+      root.className = 'power';
+      root.innerHTML = `<span class="fill"></span><span class="label">${ABILITIES[kind].name}</span><span class="time"></span>`;
+      root.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        root.releasePointerCapture?.(ev.pointerId);
+        this.actions.beginAbility(kind, ev.clientX, ev.clientY);
+      });
+      box.append(root);
+      this.powers.set(kind, {
+        root,
+        fill: root.querySelector('.fill') as HTMLElement,
+        time: root.querySelector('.time') as HTMLElement,
+      });
+    }
+  }
+
+  showUpgrade(u: UpgradeType): void {
+    this.upgradeShown = u;
+    this.upgradePanel.hidden = false;
+    $('upgrade-name').textContent = UPGRADES[u].name;
+    $('upgrade-blurb').textContent = UPGRADES[u].blurb;
+  }
+
+  hideUpgrade(): void {
+    this.upgradeShown = null;
+    this.upgradePanel.hidden = true;
+  }
+
+  private updateUpgrade(w: World, owner: number): void {
+    const u = this.upgradeShown;
+    if (!u) return;
+    const state = w.players[owner].research[u];
+    const def = UPGRADES[u];
+    const b = this.upgradeButton;
+    if (state === -1) {
+      b.textContent = 'Mejorado';
+      b.disabled = true;
+    } else if (state > 0) {
+      b.textContent = `Investigando ${Math.round((1 - state / def.ticks) * 100)}%`;
+      b.disabled = true;
+    } else {
+      b.textContent = `Mejorar · ${def.cost}`;
+      b.disabled = w.players[owner].supplies < def.cost || !canResearchAt(w, owner, u);
+    }
+  }
+
+  showFinale(text: string, good: boolean): void {
+    this.finale.textContent = text;
+    this.finale.className = good ? 'good' : 'bad';
+    this.finale.hidden = false;
+    document.body.classList.add('ending');
+  }
+
+  hideFinale(): void {
+    this.finale.hidden = true;
+    document.body.classList.remove('ending', 'lost');
+  }
+
+  reset(owner: number, thumbs: Map<string, string>, loadout: AbilityType[]): void {
+    this.buildPowers(loadout);
+    this.hideUpgrade();
+    this.hideFinale();
     this.hasCaptured = false;
     this.background = null;
     this.wasUnderdog = false;
@@ -244,7 +310,7 @@ export class Hud {
     if (!this.hasCaptured && w.tick < TICK_RATE * 150) {
       if (!mine.some((e) => e.type === 'barracks')) text = 'Arrastra Barracas al terreno verde';
       else if (!mine.some((e) => e.type === 'infantry' || e.type === 'antitank')) text = 'Toca Infantería para entrenar';
-      else text = 'Toca Todos y luego una bandera del río';
+      else text = 'Toca Todos y luego una bandera';
     }
     this.hintEl.hidden = text === '';
     this.hintEl.textContent = text;
@@ -258,6 +324,7 @@ export class Hud {
     if (player.underdog && !this.wasUnderdog) this.toast('¡Refuerzos de emergencia!');
     this.wasUnderdog = player.underdog;
     this.updatePowers(w, owner);
+    this.updateUpgrade(w, owner);
 
     const left = Math.max(0, BALANCE.suddenDeathTick - w.tick);
     const seconds = Math.ceil(left / TICK_RATE);

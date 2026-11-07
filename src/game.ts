@@ -1,15 +1,16 @@
-import { Bot, PROFILES, type Difficulty } from './ai/bot';
+import { Bot, PROFILES, botLoadout, type Difficulty } from './ai/bot';
 import type { Lockstep } from './net/lockstep';
 import type { Command } from './sim/commands';
 import {
-  BALANCE, BUILDINGS, type AbilityType, type BuildingType, type UnitType,
+  BALANCE, BUILDINGS, UPGRADES, upgradeFor,
+  type AbilityType, type BuildingType, type UnitType, type UpgradeType,
 } from './sim/data/defs';
-import { TICK_RATE, fx } from './sim/fixed';
+import { ONE, TICK_RATE, fx } from './sim/fixed';
 import { findHq } from './sim/systems/economy';
-import type { Entity, World } from './sim/types';
+import type { Entity, MapId, World } from './sim/types';
 import { createWorld, step } from './sim/world';
 import type { GameView } from './render/view';
-import { buzz, type GameAudio } from './ui/audio';
+import { buzz, type GameAudio, type Sound } from './ui/audio';
 import type { Hud } from './ui/hud';
 
 const STEP = 1 / TICK_RATE;
@@ -19,8 +20,15 @@ const WAIT_NOTICE_SECONDS = 1.2;
 const WAIT_LIMIT_SECONDS = 45;
 
 export type MatchSetup =
-  | { kind: 'bot'; difficulty: Difficulty; seed: number; demo: boolean }
-  | { kind: 'online'; seed: number; owner: number; net: Lockstep };
+  | { kind: 'bot'; difficulty: Difficulty; seed: number; demo: boolean; map: MapId; loadout: AbilityType[] }
+  | { kind: 'online'; seed: number; owner: number; net: Lockstep; map: MapId; loadouts: [AbilityType[], AbilityType[]] };
+
+/** Seconds the camera spends on the fallen base before the results appear. */
+export const FINALE_SECONDS = 3.2;
+
+const SHOT_SOUND: Partial<Record<string, Sound>> = {
+  infantry: 'rifle', antitank: 'rocket', tank: 'cannon', heli: 'mg', turret: 'mg',
+};
 
 export interface SessionEvents {
   onEnd(session: Session): void;
@@ -40,6 +48,8 @@ export class Session {
   private accumulator = 0;
   private hudClock = 0;
   private lastAttackAlert = -99;
+  private heat = 0;
+  private hqPositions: [number, number][] = [];
 
   constructor(
     private view: GameView,
@@ -52,17 +62,25 @@ export class Session {
     if (setup.kind === 'online') {
       this.owner = setup.owner;
       this.net = setup.net;
-      this.world = createWorld({ seed: setup.seed });
+      this.world = createWorld({ seed: setup.seed, map: setup.map, loadouts: setup.loadouts });
     } else {
-      const { difficulty, seed, demo } = setup;
+      const { difficulty, seed, demo, map } = setup;
       const mult = PROFILES[difficulty].incomeMult;
       this.owner = 0;
-      this.world = createWorld({ seed, incomeMult: [demo ? mult : 100, mult] });
+      const mine = demo ? botLoadout(seed + 8) : setup.loadout;
+      this.world = createWorld({
+        seed, map, incomeMult: [demo ? mult : 100, mult], loadouts: [mine, botLoadout(seed + 7)],
+      });
       this.bots = [new Bot(1, difficulty, seed + 1)];
       if (demo) this.bots.push(new Bot(0, difficulty, seed + 2));
     }
+    for (let owner = 0; owner < 2; owner++) {
+      const hq = findHq(this.world, owner)!;
+      this.hqPositions.push([hq.x / ONE, hq.y / ONE]);
+    }
     view.bind(this.world, this.owner);
-    hud.reset(this.owner, thumbs);
+    hud.reset(this.owner, thumbs, this.world.players[this.owner].loadout);
+    audio.startMusic(1);
   }
 
   private send(c: Command): void {
@@ -74,6 +92,7 @@ export class Session {
     if (this.aborted || this.world.winner !== -1) return;
     this.aborted = true;
     this.hud.setWaiting(false);
+    this.audio.stopMusic();
     this.events.onAbort(reason);
   }
 
@@ -131,9 +150,31 @@ export class Session {
     buzz(15);
   }
 
+  upgrade(u: UpgradeType): void {
+    this.send({ t: 'upgrade', p: this.owner, u });
+    this.audio.play('click');
+  }
+
+  /** A tap on one of your own buildings offers its upgrade, if it has one. */
+  inspect(building: Entity): boolean {
+    const u = upgradeFor(building.type as BuildingType);
+    if (!u || building.building > 0) return false;
+    this.hud.showUpgrade(u);
+    this.audio.play('click');
+    return true;
+  }
+
   ability(kind: AbilityType, x: number, z: number): void {
     this.send({ t: 'ability', p: this.owner, a: kind, x: fx(x), y: fx(z) });
     buzz(25);
+  }
+
+  /** Fights far from the camera sound quieter. */
+  private volumeAt(x: number, y: number): number {
+    const rig = this.view.rig;
+    const d = Math.hypot(x / ONE - rig.target.x, y / ONE - rig.target.y);
+    const near = 10 + rig.dist * 0.35;
+    return d <= near ? 1 : 1 / (1 + ((d - near) / 9) ** 2);
   }
 
   private playSounds(): void {
@@ -141,7 +182,8 @@ export class Session {
     for (const ev of w.events) {
       switch (ev.k) {
         case 'shot':
-          this.audio.play(ev.type === 'infantry' ? 'rifle' : 'cannon');
+          this.heat += 1;
+          this.audio.play(SHOT_SOUND[ev.type] ?? 'cannon', this.volumeAt(ev.x, ev.y));
           break;
         case 'hit': {
           const target = w.byId.get(ev.id);
@@ -155,10 +197,10 @@ export class Session {
         }
         case 'death':
           if (ev.type in BUILDINGS) {
-            this.audio.play('bigBoom');
-            buzz(60);
+            this.audio.play('bigBoom', this.volumeAt(ev.x, ev.y) + 0.3);
+            if (ev.owner === this.owner) buzz(60);
           } else {
-            this.audio.play('boom');
+            this.audio.play('boom', this.volumeAt(ev.x, ev.y));
           }
           break;
         case 'capture':
@@ -173,21 +215,60 @@ export class Session {
         case 'built':
           if (ev.owner === this.owner) this.audio.play('done');
           break;
+        case 'spawn':
+          if (ev.owner === this.owner) this.audio.play('ready', 0.8);
+          break;
+        case 'researched':
+          if (ev.owner === this.owner) {
+            this.audio.play('upgrade');
+            this.hud.toast(`Mejora lista: ${UPGRADES[ev.upgrade].name}`);
+          }
+          break;
         case 'strike':
-          if (ev.kind !== 'artillery') this.audio.play('jet');
-          if (ev.owner !== this.owner) {
+          if (ev.kind === 'artillery') this.audio.play('whistle');
+          else if (ev.kind === 'airstrike') this.audio.play('jet');
+          else if (ev.kind === 'paradrop' || ev.kind === 'armor') {
+            this.audio.play('jet', 0.6);
+            this.audio.play('drop');
+          }
+          if (ev.owner !== this.owner && ev.kind !== 'repair') {
             this.audio.play('alert');
-            this.hud.toast('¡Ataque enemigo en camino!');
+            this.hud.toast(ev.kind === 'paradrop' || ev.kind === 'armor'
+              ? '¡Refuerzos enemigos en camino!' : '¡Ataque enemigo en camino!');
           }
           break;
         case 'blast':
-          this.audio.play(ev.kind === 'airstrike' ? 'bigBoom' : 'boom');
-          buzz(ev.kind === 'airstrike' ? 80 : 30);
+          if (ev.kind === 'emp') this.audio.play('zap');
+          else if (ev.kind === 'repair') this.audio.play('heal');
+          else {
+            this.audio.play(ev.kind === 'airstrike' ? 'bigBoom' : 'boom', this.volumeAt(ev.x, ev.y) + 0.3);
+            buzz(ev.kind === 'airstrike' ? 80 : 30);
+          }
           break;
         default:
           break;
       }
     }
+  }
+
+  private updateMusic(dt: number): void {
+    this.heat *= Math.exp(-dt / 3);
+    this.audio.setIntensity(this.world.suddenDeath ? 3 : this.heat > 10 ? 2 : 1);
+  }
+
+  /** The camera flies to the base that fell while the result is announced. */
+  private beginFinale(now: number): void {
+    const w = this.world;
+    const won = w.winner === this.owner;
+    const loser = w.winner === 2 ? this.owner : 1 - w.winner;
+    const [x, z] = this.hqPositions[loser];
+    this.view.playFinale(x, z, won, w.winner, now);
+    this.hud.showFinale(w.winner === 2 ? 'EMPATE' : won ? '¡VICTORIA!' : 'DERROTA', won);
+    if (!won) document.body.classList.add('lost');
+    this.selection.clear();
+    this.audio.stopMusic();
+    this.audio.play(won ? 'victory' : 'defeat');
+    buzz(won ? 120 : 250);
   }
 
   /** Advances one tick; false means the other player's commands have not arrived. */
@@ -208,7 +289,10 @@ export class Session {
     this.view.handleEvents(w, w.events, 1, now);
     this.playSounds();
     for (const id of this.selection) if (!w.byId.has(id)) this.selection.delete(id);
-    if (w.winner !== -1) this.events.onEnd(this);
+    if (w.winner !== -1) {
+      this.beginFinale(now);
+      this.events.onEnd(this);
+    }
     return true;
   }
 
@@ -232,6 +316,7 @@ export class Session {
         this.accumulator -= STEP;
       }
       this.noteWait(dt, stalled);
+      this.updateMusic(dt);
     }
     this.view.render(w, Math.min(1, this.accumulator / STEP), now, dt, this.selection, this.owner);
 

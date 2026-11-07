@@ -1,12 +1,13 @@
 import {
-  ABILITIES, BALANCE, BUILDINGS, UNITS,
-  type AbilityType, type BuildingType, type UnitType,
+  ABILITIES, BALANCE, BUILDINGS, UNITS, UPGRADES,
+  type AbilityType, type BuildingType, type UnitType, type UpgradeType,
 } from './data/defs';
 import { ONE, dist, fx, toCell } from './fixed';
 import { cellCenterX, cellCenterY, freeCellNear } from './pathfinding';
 import { useAbility } from './systems/abilities';
 import { canHit } from './systems/combat';
 import { placeBuilding, squadCount } from './systems/production';
+import { startResearch } from './systems/research';
 import { Order, type Entity, type World } from './types';
 
 /**
@@ -20,7 +21,8 @@ export type Command =
   | { t: 'train'; p: number; unit: UnitType }
   | { t: 'build'; p: number; b: BuildingType; cx: number; cy: number }
   | { t: 'rally'; p: number; x: number; y: number }
-  | { t: 'ability'; p: number; a: AbilityType; x: number; y: number };
+  | { t: 'ability'; p: number; a: AbilityType; x: number; y: number }
+  | { t: 'upgrade'; p: number; u: UpgradeType };
 
 const hasOwn = (o: object, key: unknown): boolean =>
   typeof key === 'string' && Object.prototype.hasOwnProperty.call(o, key);
@@ -39,6 +41,7 @@ export function isValidCommand(value: unknown): value is Command {
     case 'build': return hasOwn(BUILDINGS, c.b) && c.b !== 'hq' && ints('cx', 'cy');
     case 'rally': return ints('x', 'y');
     case 'ability': return hasOwn(ABILITIES, c.a) && ints('x', 'y');
+    case 'upgrade': return hasOwn(UPGRADES, c.u);
     default: return false;
   }
 }
@@ -171,6 +174,9 @@ export function applyCommand(w: World, c: Command): void {
       break;
     case 'ability':
       useAbility(w, c.p, c.a, c.x, c.y);
+      break;
+    case 'upgrade':
+      startResearch(w, c.p, c.u);
       break;
   }
 }

@@ -1,10 +1,14 @@
 import Peer, { type DataConnection } from 'peerjs';
+import type { AbilityType } from '../sim/data/defs';
+import type { MapId } from '../sim/types';
 import type { TurnMessage } from './lockstep';
 
+/** Anything read from these is cleaned before use: the other side may be anyone. */
 export type NetMessage =
   | TurnMessage
-  | { k: 'start'; seed: number }
-  | { k: 'rematch' };
+  | { k: 'hello'; loadout: AbilityType[] }
+  | { k: 'start'; seed: number; map: MapId; loadouts: [AbilityType[], AbilityType[]] }
+  | { k: 'rematch'; loadout: AbilityType[] };
 
 const ROOM_PREFIX = 'blitzfront-v1-';
 const JOIN_TIMEOUT_MS = 20000;
@@ -68,17 +72,95 @@ export class NetLink {
     this.peer.destroy();
   }
 
-  /** Opens a room. `onOpen` fires once the code can be shared. */
-  static host(code: string, onOpen: () => void): { link: Promise<NetLink>; cancel: () => void } {
-    const peer = new Peer(ROOM_PREFIX + code, { debug: 0 });
+  /**
+   * Opens a room. `onOpen` fires once the code can be shared. Phones suspend
+   * the page while the player shares the code from another app, which drops
+   * the link to the room server, so the room quietly reconnects with the
+   * same code instead of failing.
+   */
+  static host(
+    code: string, onOpen: () => void, onStatus: (text: string) => void = () => {},
+  ): { link: Promise<NetLink>; cancel: () => void } {
+    let peer: Peer;
+    let opened = false;
+    let done = false;
+    let retryTimer = 0;
+    let resolveLink: (link: NetLink) => void = () => {};
+    let rejectLink: (err: Error) => void = () => {};
     const link = new Promise<NetLink>((resolve, reject) => {
-      peer.on('open', onOpen);
-      peer.on('error', (err) => reject(new Error(describe(err.type))));
-      peer.on('connection', (conn) => {
-        conn.on('open', () => resolve(new NetLink(peer, conn)));
-      });
+      resolveLink = resolve;
+      rejectLink = reject;
     });
-    return { link, cancel: () => peer.destroy() };
+
+    const retry = (ms: number) => {
+      window.clearTimeout(retryTimer);
+      if (!done) retryTimer = window.setTimeout(revive, ms);
+    };
+    // A suspended page loses its socket; a destroyed peer has to start over.
+    const revive = () => {
+      if (done) return;
+      if (peer.destroyed) {
+        onStatus('Reabriendo la sala…');
+        start();
+      } else if (peer.disconnected) {
+        onStatus('Reconectando la sala…');
+        try {
+          peer.reconnect();
+        } catch {
+          // A reconnect already in progress throws; the next try catches up.
+        }
+      } else {
+        return;
+      }
+      retry(3000);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') revive();
+    };
+    const finish = () => {
+      done = true;
+      window.clearTimeout(retryTimer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+
+    const start = () => {
+      const current = new Peer(ROOM_PREFIX + code, { debug: 0 });
+      peer = current;
+      current.on('open', () => {
+        window.clearTimeout(retryTimer);
+        if (!opened) onOpen();
+        else onStatus('Esperando a tu rival… Tras compartir, vuelve aquí.');
+        opened = true;
+      });
+      current.on('disconnected', () => retry(document.hidden ? 3000 : 300));
+      current.on('error', (err) => {
+        // Once the room exists, server hiccups are temporary: keep the room alive.
+        if (opened && err.type !== 'browser-incompatible') {
+          retry(2000);
+          return;
+        }
+        finish();
+        current.destroy();
+        rejectLink(new Error(describe(err.type)));
+      });
+      current.on('connection', (conn) => {
+        conn.on('open', () => {
+          if (done) return;
+          finish();
+          resolveLink(new NetLink(current, conn));
+        });
+      });
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    start();
+    return {
+      link,
+      cancel: () => {
+        finish();
+        peer.destroy();
+      },
+    };
   }
 
   static join(code: string): Promise<NetLink> {

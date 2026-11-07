@@ -174,6 +174,52 @@ button { font: inherit; color: inherit; touch-action: none; cursor: pointer; }
 .power .label { position: relative; pointer-events: none; }
 .power .time { position: absolute; right: 4px; top: 1px; font-size: 10px; color: var(--gold); pointer-events: none; font-variant-numeric: tabular-nums; }
 
+#upgrade {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  width: min(300px, 70vw);
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--panel-solid);
+  border: 1px solid var(--gold);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: center;
+  pointer-events: auto;
+}
+#upgrade b { font-size: 15px; color: var(--gold); }
+#upgrade small { color: var(--muted); font-weight: 500; }
+#upgrade .row { display: flex; gap: 6px; align-items: stretch; }
+#upgrade .wide { margin-top: 4px; min-height: 36px; font-size: 14px; }
+#upgrade-close { margin-top: 4px; width: 40px; border-radius: 10px; border: 1px solid var(--line); background: #243240; }
+
+#finale {
+  position: absolute;
+  top: 34%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: clamp(40px, 9vw, 86px);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.35), 0 0 30px rgba(0, 0, 0, 0.4);
+  animation: slam 0.7s cubic-bezier(0.2, 1.6, 0.4, 1) both, glow 1.6s ease-in-out 0.7s infinite;
+}
+#finale.good { color: var(--gold); }
+#finale.bad { color: #ff7a5c; }
+@keyframes slam {
+  0% { transform: translate(-50%, -50%) scale(3); opacity: 0; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+@keyframes glow { 50% { transform: translate(-50%, -50%) scale(1.06); } }
+
+body.ending #bar, body.ending #side, body.ending #abilities, body.ending #top, body.ending #minimap,
+body.ending #hint, body.ending #banner, body.ending #upgrade { opacity: 0; pointer-events: none; transition: opacity 0.5s; }
+body.lost #game { filter: saturate(0.35) brightness(0.85); transition: filter 1.5s; }
+
 #waiting {
   position: absolute;
   top: 40%;
@@ -321,6 +367,34 @@ button { font: inherit; color: inherit; touch-action: none; cursor: pointer; }
   text-align: center;
 }
 
+.card.menu {
+  width: min(760px, 100%);
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 18px;
+  text-align: left;
+}
+.card.menu .intro { align-self: center; }
+.setup .label { margin: 0 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.setup .label span { color: var(--gold); }
+.picks { display: flex; flex-wrap: wrap; gap: 5px; }
+.pick {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: #243240;
+  font-size: 12.5px;
+  touch-action: manipulation;
+}
+.pick.on { background: rgba(92, 70, 16, 0.95); border-color: var(--gold); color: var(--gold); }
+.hint-line { margin: 3px 0 9px; min-height: 1.25em; font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.diff button:disabled, .wide:disabled { opacity: 0.45; }
+
+@media (max-width: 620px) {
+  .card.menu { grid-template-columns: 1fr; }
+}
+
 h1 { margin: 0; font-size: 34px; font-weight: 900; letter-spacing: -0.02em; }
 h1 span { color: var(--red); margin-left: 7px; }
 .tag { margin: 4px 0 10px; color: var(--muted); font-weight: 500; }
@@ -367,6 +441,10 @@ h1 span { color: var(--red); margin-left: 7px; }
   #abilities { bottom: 78px; gap: 4px; }
   .power { height: 32px; }
   #hint { bottom: 80px; }
+  #upgrade { bottom: 80px; }
+  .card.menu { gap: 12px; padding: 12px 16px; }
+  .pick { min-height: 28px; padding: 3px 8px; }
+  .hint-line { margin-bottom: 6px; }
   h1 { font-size: 26px; }
   .how { font-size: 12px; margin-bottom: 8px; }
 }

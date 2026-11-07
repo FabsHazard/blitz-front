@@ -15,7 +15,7 @@ export function createEntity(
     order: Order.Idle, destX: x, destY: y, orderTarget: 0,
     cx: 0, cy: 0, building: 0,
     queue: [], queueProgress: 0,
-    linkId: 0, timer: 0, phase: 0, cargo: 0,
+    linkId: 0, timer: 0, phase: 0, cargo: 0, stun: 0,
   };
   w.entities.push(e);
   w.byId.set(e.id, e);

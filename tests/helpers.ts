@@ -1,11 +1,19 @@
 import { Bot, PROFILES, type Difficulty } from '../src/ai/bot';
 import type { Command } from '../src/sim/commands';
 import { createWorld, hashState, step } from '../src/sim/world';
-import type { World } from '../src/sim/types';
+import type { AbilityType } from '../src/sim/data/defs';
+import type { MapId, World } from '../src/sim/types';
 
-export function aiMatch(seed: number, a: Difficulty, b: Difficulty, maxTicks = 15 * 60 * 8) {
+export interface MatchOptions {
+  map?: MapId;
+  loadouts?: [AbilityType[], AbilityType[]];
+}
+
+export function aiMatch(
+  seed: number, a: Difficulty, b: Difficulty, maxTicks = 15 * 60 * 8, options: MatchOptions = {},
+) {
   const world = createWorld({
-    seed, incomeMult: [PROFILES[a].incomeMult, PROFILES[b].incomeMult],
+    seed, incomeMult: [PROFILES[a].incomeMult, PROFILES[b].incomeMult], ...options,
   });
   const bots = [new Bot(0, a, seed + 1), new Bot(1, b, seed + 2)];
   const hashes: number[] = [];

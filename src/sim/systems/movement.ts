@@ -148,7 +148,7 @@ export function movementSystem(w: World): void {
     if (e.isBuilding) continue;
     e.px = e.x;
     e.py = e.y;
-    moveUnit(w, e);
+    if (e.stun === 0) moveUnit(w, e);
   }
   separate(w);
 }

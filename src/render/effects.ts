@@ -18,6 +18,9 @@ interface Tracer {
 const FIRE = [new THREE.Color('#ffd65c'), new THREE.Color('#ff9a3c'), new THREE.Color('#f25c33')];
 const SMOKE = [new THREE.Color('#5a5a60'), new THREE.Color('#77777c')];
 const DUST = new THREE.Color('#d6c79c');
+const SPARK = new THREE.Color('#ffe9a8');
+const EMP = [new THREE.Color('#9fe8ff'), new THREE.Color('#4fb6ff'), new THREE.Color('#ffffff')];
+const HEAL = [new THREE.Color('#9dffb8'), new THREE.Color('#46e07a')];
 
 /** Pooled low-poly particles. They shrink instead of fading to avoid blending costs. */
 export class Effects {
@@ -80,9 +83,54 @@ export class Effects {
     if (width > 0.07) this.puff(ax, ay, az, 0, 0.3, 0, 0.14, 0.2, FIRE[0]);
   }
 
-  hit(x: number, y: number, z: number): void {
+  hit(x: number, y: number, z: number, armored = false): void {
     const a = Math.random() * 6.28;
     this.puff(x + Math.cos(a) * 0.3, y + 0.25, z + Math.sin(a) * 0.3, 0, 0.8, 0, 0.26, 0.13, DUST);
+    if (!armored) return;
+    // Metal on metal throws a couple of sparks.
+    for (let i = 0; i < 2; i++) {
+      const b = Math.random() * 6.28;
+      this.puff(x, y + 0.45, z, Math.cos(b) * 2.6, 1.6 + Math.random() * 1.5, Math.sin(b) * 2.6, 0.18, 0.06, SPARK);
+    }
+  }
+
+  /** A flat ring of particles, for abilities that are not explosions. */
+  ring(x: number, z: number, radius: number, kind: 'emp' | 'heal'): void {
+    const colors = kind === 'emp' ? EMP : HEAL;
+    const count = Math.round(14 + radius * 5);
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * 6.28;
+      const speed = radius * 2.2;
+      this.puff(x + Math.cos(a) * 0.4, 0.4, z + Math.sin(a) * 0.4,
+        Math.cos(a) * speed, kind === 'heal' ? 0.6 : 0.2, Math.sin(a) * speed,
+        0.5, 0.2, colors[i % colors.length]);
+    }
+    for (let i = 0; i < count / 2; i++) {
+      this.puff(x + (Math.random() - 0.5) * radius * 1.4, 0.2, z + (Math.random() - 0.5) * radius * 1.4,
+        0, 1.4 + Math.random() * 1.6, 0, 0.8 + Math.random() * 0.4, 0.14, colors[i % colors.length]);
+    }
+  }
+
+  /** Small crackle over something frozen by an EMP. */
+  zap(x: number, y: number, z: number): void {
+    this.puff(x + (Math.random() - 0.5) * 0.8, y + 0.4 + Math.random() * 0.5, z + (Math.random() - 0.5) * 0.8,
+      0, 0.5, 0, 0.16, 0.09, EMP[Math.random() < 0.5 ? 0 : 2]);
+  }
+
+  /** A green wisp over something being repaired. */
+  heal(x: number, y: number, z: number): void {
+    this.puff(x + (Math.random() - 0.5) * 0.8, y + 0.3, z + (Math.random() - 0.5) * 0.8,
+      0, 1.2, 0, 0.6, 0.1, HEAL[Math.random() < 0.5 ? 0 : 1]);
+  }
+
+  firework(x: number, y: number, z: number, color: THREE.Color): void {
+    for (let i = 0; i < 26; i++) {
+      const a = Math.random() * 6.28;
+      const b = Math.acos(Math.random() * 2 - 1);
+      const speed = 4 + Math.random() * 1.5;
+      this.puff(x, y, z, Math.sin(b) * Math.cos(a) * speed, Math.cos(b) * speed, Math.sin(b) * Math.sin(a) * speed,
+        0.9 + Math.random() * 0.4, 0.17, i % 4 === 0 ? SPARK : color);
+    }
   }
 
   /** A wisp rising from something damaged. */

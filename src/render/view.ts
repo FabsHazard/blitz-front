@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { canPlace } from '../sim/commands';
 import { ABILITIES, BALANCE, BUILDINGS, type BuildingType } from '../sim/data/defs';
-import { ONE, TICK_RATE, fx } from '../sim/fixed';
+import { ONE, TICK_RATE } from '../sim/fixed';
 import type { GameEvent, World } from '../sim/types';
 import { CameraRig } from './camera';
 import { Effects } from './effects';
@@ -33,6 +33,7 @@ export class GameView {
   width = 1;
   height = 1;
   private terrain: TerrainView | null = null;
+  private mapId = '';
   private sun = new THREE.DirectionalLight('#fff4dc', 2.5);
   private points: PointView[] = [];
   private pointGroup = new THREE.Group();
@@ -44,6 +45,7 @@ export class GameView {
   private aim: THREE.Mesh;
   private strikeMarks: THREE.InstancedMesh;
   private smokeClock = 0;
+  private finale: { x: number; z: number; start: number; won: boolean; color: THREE.Color; next: number } | null = null;
   private pixelRatio: number;
 
   constructor(canvas: HTMLCanvasElement, w: World) {
@@ -105,7 +107,6 @@ export class GameView {
       this.entities.group, this.effects.group, this.scars.group, this.air.group, this.pointGroup,
       this.ping, this.rally, this.validCells, this.ghost, this.aim, this.strikeMarks,
     );
-    this.buildPoints(w);
     this.bind(w, 0);
     this.resize();
   }
@@ -123,6 +124,14 @@ export class GameView {
   }
 
   private buildPoints(w: World): void {
+    for (const child of [...this.pointGroup.children]) {
+      this.pointGroup.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      }
+    }
+    this.points = [];
     const pole = flagModel();
     const cloth = flagClothModel();
     for (const p of w.points) {
@@ -149,14 +158,23 @@ export class GameView {
     }
   }
 
-  /** Points the view at a new match. The map is fixed, so the scenery is reused. */
+  /** Points the view at a new match, rebuilding the scenery only if the map changed. */
   bind(w: World, owner: number): void {
     this.entities.reset();
     this.scars.reset();
     this.air.reset();
-    if (!this.terrain) {
+    this.endFinale();
+    if (this.mapId !== w.map) {
+      this.mapId = w.map;
+      if (this.terrain) {
+        this.scene.remove(this.terrain.group);
+        this.terrain.group.traverse((o) => {
+          if (o instanceof THREE.Mesh) o.geometry.dispose();
+        });
+      }
       this.terrain = buildTerrain(w);
       this.scene.add(this.terrain.group);
+      this.buildPoints(w);
     }
     this.rig.flipped = owner === 1;
     if (owner === 0) this.rig.focus(18, 23);
@@ -225,8 +243,9 @@ export class GameView {
     (this.ghost.material as THREE.MeshBasicMaterial).color.set(valid ? '#7dffb0' : '#ff6a5c');
   }
 
-  showAim(x: number, z: number, radius: number): void {
+  showAim(x: number, z: number, radius: number, color = '#ffd65c'): void {
     this.aim.visible = true;
+    (this.aim.material as THREE.MeshBasicMaterial).color.set(color);
     this.aim.position.set(x, 0.22, z);
     this.aim.scale.set(radius, 1, radius);
   }
@@ -242,13 +261,14 @@ export class GameView {
     let count = 0;
     for (const s of w.strikes) {
       if (count >= 8) break;
-      const radius = (s.kind === 'airstrike' ? ABILITIES.airstrike.radius
-        : s.kind === 'artillery' ? fx(4.5) : ABILITIES.paradrop.radius) / ONE;
+      const radius = ABILITIES[s.kind].area / ONE;
       const pulse = 1 + Math.sin(time * 16) * 0.05;
       m.makeScale(radius * pulse, 1, radius * pulse);
       m.setPosition(s.x / ONE, 0.24, s.y / ONE);
       this.strikeMarks.setMatrixAt(count, m);
-      this.strikeMarks.setColorAt(count, color.set(s.owner === owner ? '#7dffb0' : '#ff4d3d'));
+      const friendly = ABILITIES[s.kind].friendly || s.kind === 'paradrop' || s.kind === 'armor';
+      this.strikeMarks.setColorAt(count, color.set(
+        s.owner !== owner ? (friendly ? '#ffb347' : '#ff4d3d') : s.kind === 'emp' ? '#7fd8ff' : '#7dffb0'));
       count++;
     }
     this.strikeMarks.count = count;
@@ -261,6 +281,7 @@ export class GameView {
     if (this.smokeClock < 0.24) return;
     this.smokeClock = 0;
     for (const e of w.entities) {
+      if (e.stun > 0) this.effects.zap(e.x / ONE, entityHeight(e), e.y / ONE);
       if (e.building > 0 || e.type === 'infantry' || e.type === 'antitank') continue;
       const pct = e.hp / e.maxHp;
       if (pct >= 0.5) continue;
@@ -276,6 +297,8 @@ export class GameView {
           if (!from) break;
           const [ax, az] = from.isBuilding ? [from.x / ONE, from.y / ONE] : entityPosition(from, alpha);
           const to = w.byId.get(ev.to);
+          const punch = ev.type === 'tank' || ev.type === 'antitank' ? 1 : ev.type === 'infantry' ? 0.45 : 0.7;
+          this.entities.hurt(ev.to, punch, ax, az);
           const by = (to ? entityHeight(to) : 0) + 0.3;
           const heavy = ev.type === 'tank' || ev.type === 'antitank' || ev.type === 'heli';
           this.entities.recoil(ev.from);
@@ -285,7 +308,8 @@ export class GameView {
         case 'hit': {
           const target = w.byId.get(ev.id);
           this.entities.flash(ev.id);
-          this.effects.hit(ev.x / ONE, target ? entityHeight(target) : 0, ev.y / ONE);
+          const armored = target !== undefined && (target.isBuilding || target.type === 'tank' || target.type === 'heli' || target.type === 'truck');
+          this.effects.hit(ev.x / ONE, target ? entityHeight(target) : 0, ev.y / ONE, armored);
           break;
         }
         case 'death': {
@@ -306,17 +330,74 @@ export class GameView {
           this.requestShadows();
           break;
         case 'strike':
-          if (ev.kind !== 'artillery') this.air.flyby(ev.owner, ev.x / ONE, ev.y / ONE, ev.delay / TICK_RATE);
-          if (ev.kind === 'paradrop') this.air.parachutes(ev.x / ONE, ev.y / ONE, ev.delay / TICK_RATE);
+          if (ev.kind === 'airstrike' || ev.kind === 'paradrop' || ev.kind === 'armor') {
+            this.air.flyby(ev.owner, ev.x / ONE, ev.y / ONE, ev.delay / TICK_RATE);
+          }
+          if (ev.kind === 'paradrop' || ev.kind === 'armor') {
+            this.air.parachutes(ev.x / ONE, ev.y / ONE, ev.delay / TICK_RATE);
+          }
           break;
-        case 'blast':
+        case 'blast': {
+          const r = ev.radius / ONE;
+          if (ev.kind === 'emp' || ev.kind === 'repair') {
+            this.effects.ring(ev.x / ONE, ev.y / ONE, r, ev.kind === 'emp' ? 'emp' : 'heal');
+            for (const e of w.entities) {
+              const dx = e.x / ONE - ev.x / ONE;
+              const dz = e.y / ONE - ev.y / ONE;
+              if (dx * dx + dz * dz > r * r) continue;
+              if (ev.kind === 'emp') this.entities.hurt(e.id, 0.8);
+              else for (let i = 0; i < 3; i++) this.effects.heal(e.x / ONE, entityHeight(e), e.y / ONE);
+            }
+            if (ev.kind === 'emp') this.rig.shake(0.12, now);
+            break;
+          }
           this.effects.explosion(ev.x / ONE, 0, ev.y / ONE, ev.kind === 'airstrike' ? 3.4 : 1.5);
-          this.scars.crater(ev.x / ONE, ev.y / ONE, (ev.radius / ONE) * 0.8);
+          this.scars.crater(ev.x / ONE, ev.y / ONE, r * 0.8);
           this.rig.shake(ev.kind === 'airstrike' ? 0.5 : 0.2, now);
+          for (const e of w.entities) {
+            const dx = e.x / ONE - ev.x / ONE;
+            const dz = e.y / ONE - ev.y / ONE;
+            if (dx * dx + dz * dz <= (r + 1) * (r + 1)) this.entities.hurt(e.id, 1.4, ev.x / ONE, ev.y / ONE);
+          }
           break;
+        }
         default:
           break;
       }
+    }
+  }
+
+  /** The end of a match: the camera goes to the fallen base while it blows up. */
+  playFinale(x: number, z: number, won: boolean, winnerOwner: number, now: number): void {
+    this.finale = {
+      x, z, start: now, won, next: now,
+      color: new THREE.Color(winnerOwner >= 0 && winnerOwner < 2 ? TEAMS[winnerOwner].main : '#ffd65c'),
+    };
+  }
+
+  endFinale(): void {
+    this.finale = null;
+  }
+
+  private updateFinale(time: number): void {
+    const f = this.finale;
+    if (!f) return;
+    const t = time - f.start;
+    const ease = Math.min(1, t / 1.4);
+    this.rig.target.x += (f.x - this.rig.target.x) * ease * 0.08;
+    this.rig.target.y += (f.z - this.rig.target.y) * ease * 0.08;
+    this.rig.dist += (28 - this.rig.dist) * 0.03;
+    if (time < f.next) return;
+    if (t < 2.4) {
+      const a = Math.random() * 6.28;
+      const d = Math.random() * 2.6;
+      this.effects.explosion(f.x + Math.cos(a) * d, 0.5, f.z + Math.sin(a) * d, 1 + Math.random() * 1.2);
+      this.rig.shake(0.25, time);
+      f.next = time + 0.14 + Math.random() * 0.12;
+    } else if (f.won && t < 9) {
+      const a = Math.random() * 6.28;
+      this.effects.firework(f.x + Math.cos(a) * 5, 6 + Math.random() * 3, f.z + Math.sin(a) * 4, f.color);
+      f.next = time + 0.35 + Math.random() * 0.3;
     }
   }
 
@@ -337,6 +418,12 @@ export class GameView {
     this.terrain?.animate(time);
     this.updatePoints(w, time);
     this.entities.update(w, alpha, time, dt, selection, this.rig);
+    for (const lost of this.entities.lost) {
+      this.effects.explosion(lost.x, 0, lost.z, 0.8);
+      this.scars.wreck(lost.x, lost.z, lost.heading);
+    }
+    this.entities.lost.length = 0;
+    this.updateFinale(time);
     this.effects.update(dt);
     this.scars.update(dt);
     this.air.update(dt);

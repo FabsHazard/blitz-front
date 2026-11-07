@@ -1,5 +1,6 @@
 import {
-  ABILITIES, BALANCE, UNITS, type AbilityType, type BuildingType,
+  ABILITIES, ABILITY_TYPES, BALANCE, BUILDINGS, EMP_STUN, UNITS, UPGRADE_TYPES,
+  type AbilityType, type BuildingType, type UnitType, type UpgradeType,
 } from '../data/defs';
 import { ONE, dist, idiv } from '../fixed';
 import { cellCenterX, cellCenterY, freeCellNear } from '../pathfinding';
@@ -8,16 +9,22 @@ import type { Player, Strike, World } from '../types';
 import { applyDamage } from './combat';
 import { createEntity, squadCount } from './production';
 
-export const newCooldowns = (): Record<AbilityType, number> => ({
-  airstrike: ABILITIES.airstrike.startCooldown,
-  artillery: ABILITIES.artillery.startCooldown,
-  paradrop: ABILITIES.paradrop.startCooldown,
-});
+export const newCooldowns = (): Record<AbilityType, number> => {
+  const cooldowns = {} as Record<AbilityType, number>;
+  for (const kind of ABILITY_TYPES) cooldowns[kind] = ABILITIES[kind].startCooldown;
+  return cooldowns;
+};
+
+export const newResearch = (): Record<UpgradeType, number> => {
+  const research = {} as Record<UpgradeType, number>;
+  for (const u of UPGRADE_TYPES) research[u] = 0;
+  return research;
+};
 
 export function useAbility(w: World, p: number, kind: AbilityType, x: number, y: number): boolean {
   const player = w.players[p];
   const def = ABILITIES[kind];
-  if (!def || player.cooldowns[kind] > 0) return false;
+  if (!def || !player.loadout.includes(kind) || player.cooldowns[kind] > 0) return false;
   if (x < 0 || y < 0 || x >= w.width * ONE || y >= w.height * ONE) return false;
   player.cooldowns[kind] = def.cooldown;
   w.strikes.push({ kind, owner: p, x, y, timer: def.delay, shells: def.shells });
@@ -41,27 +48,54 @@ function blast(w: World, s: Strike, x: number, y: number): void {
   w.events.push({ k: 'blast', kind: s.kind, x, y, radius: def.radius });
 }
 
-function drop(w: World, s: Strike): void {
-  for (let i = 0; i < 2; i++) {
+function drop(w: World, s: Strike, type: UnitType, count: number): void {
+  for (let i = 0; i < count; i++) {
     if (squadCount(w, s.owner) >= BALANCE.maxSquads) return;
-    const offset = (i === 0 ? -1 : 1) * ONE;
+    const offset = count === 1 ? 0 : (i === 0 ? -1 : 1) * ONE;
     const cell = freeCellNear(w, s.x + offset, s.y, s.x, s.y);
-    const e = createEntity(
-      w, 'infantry', s.owner, cellCenterX(w, cell), cellCenterY(w, cell), UNITS.infantry.hp,
-    );
+    const e = createEntity(w, type, s.owner, cellCenterX(w, cell), cellCenterY(w, cell), UNITS[type].hp);
     w.players[s.owner].stats.unitsMade++;
     w.events.push({ k: 'spawn', id: e.id, owner: e.owner });
   }
 }
 
+/** Freezes enemy units and turrets in the area. */
+function pulse(w: World, s: Strike): void {
+  const def = ABILITIES.emp;
+  for (const e of w.entities) {
+    if (e.owner === s.owner || (e.isBuilding && e.type !== 'turret')) continue;
+    if (dist(e.x, e.y, s.x, s.y) > def.radius + (e.isBuilding ? ONE : 0)) continue;
+    e.stun = EMP_STUN;
+    e.targetId = 0;
+  }
+  w.events.push({ k: 'blast', kind: 'emp', x: s.x, y: s.y, radius: def.radius });
+}
+
+/** Heals the caster's units, and its buildings by less. Never the HQ. */
+function repair(w: World, s: Strike): void {
+  const def = ABILITIES.repair;
+  for (const e of w.entities) {
+    if (e.owner !== s.owner || e.type === 'hq' || e.building > 0) continue;
+    const reach = def.radius + (e.isBuilding ? ONE : 0);
+    if (dist(e.x, e.y, s.x, s.y) > reach) continue;
+    const pct = e.isBuilding ? 15 : def.damage;
+    e.hp = Math.min(e.maxHp, e.hp + idiv(e.maxHp * pct, 100));
+  }
+  w.events.push({ k: 'blast', kind: 'repair', x: s.x, y: s.y, radius: def.radius });
+}
+
 function detonate(w: World, s: Strike): void {
-  if (s.kind === 'paradrop') {
-    drop(w, s);
-  } else if (s.kind === 'airstrike') {
-    blast(w, s, s.x, s.y);
-  } else {
-    const spread = ONE * 3;
-    blast(w, s, s.x + randInt(w, -spread, spread), s.y + randInt(w, -spread, spread));
+  switch (s.kind) {
+    case 'paradrop': drop(w, s, 'infantry', 2); break;
+    case 'armor': drop(w, s, 'tank', 1); break;
+    case 'airstrike': blast(w, s, s.x, s.y); break;
+    case 'emp': pulse(w, s); break;
+    case 'repair': repair(w, s); break;
+    case 'artillery': {
+      const spread = ONE * 3;
+      blast(w, s, s.x + randInt(w, -spread, spread), s.y + randInt(w, -spread, spread));
+      break;
+    }
   }
 }
 
@@ -84,16 +118,13 @@ export function abilitySystem(w: World): void {
   w.strikes = w.strikes.filter((s) => s.shells > 0);
 }
 
-const BUILDING_VALUE: Record<BuildingType, number> = {
-  hq: 0, barracks: 140, factory: 240, helipad: 280, refinery: 160, turret: 130,
-};
 
 /** Rough worth of everything a player holds, used to spot a lopsided game. */
 export function strength(w: World, owner: number): number {
   let total = w.points.filter((p) => p.owner === owner).length * BALANCE.pointValue;
   for (const e of w.entities) {
     if (e.owner !== owner) continue;
-    if (e.isBuilding) total += BUILDING_VALUE[e.type as BuildingType];
+    if (e.isBuilding) total += BUILDINGS[e.type as BuildingType].cost;
     else if (e.type !== 'truck') total += idiv(UNITS[e.type as 'tank'].cost * e.hp, e.maxHp);
   }
   return total;

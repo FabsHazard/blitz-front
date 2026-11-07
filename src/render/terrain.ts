@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { generateMap } from '../sim/map';
 import { Terrain, type World } from '../sim/types';
 import { pumpModel, rockModel, treeModel } from './models/catalog';
 import { ModelBuilder } from './models/parts';
@@ -36,23 +37,22 @@ function nearSegment(px: number, py: number, ax: number, ay: number, bx: number,
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
-function isRoad(x: number, y: number): boolean {
-  const roads: [number, number, number, number][] = [
-    [10, 22, 36, 22], [12, 22, 36, 10], [12, 22, 36, 34],
-    [62, 22, 36, 22], [60, 22, 36, 10], [60, 22, 36, 34],
-  ];
+type Road = [number, number, number, number];
+
+function isRoad(roads: Road[], x: number, y: number): boolean {
   return roads.some(([ax, ay, bx, by]) => nearSegment(x + 0.5, y + 0.5, ax, ay, bx, by) < 1.15);
 }
 
-function cellColor(w: World, x: number, y: number): THREE.Color {
+function cellColor(w: World, roads: Road[], x: number, y: number): THREE.Color {
   const near = isWater(w, x - 1, y) || isWater(w, x + 1, y) || isWater(w, x, y - 1) || isWater(w, x, y + 1);
   if (w.terrain[y * w.width + x] === Terrain.Water) return BANK;
   if (near) return SAND;
-  if (isRoad(x, y)) return ROAD;
+  if (w.terrain[y * w.width + x] === Terrain.Grass && isRoad(roads, x, y)) return ROAD;
   return GRASS[Math.floor(hash(x + 3, y + 7) * GRASS.length)];
 }
 
 function terrainGeometry(w: World): THREE.BufferGeometry {
+  const roads = generateMap(w.map).roads;
   const positions: number[] = [];
   const colors: number[] = [];
   const vert = (x: number, y: number, c: THREE.Color, shade: number) => {
@@ -61,7 +61,7 @@ function terrainGeometry(w: World): THREE.BufferGeometry {
   };
   for (let y = 0; y < w.height; y++) {
     for (let x = 0; x < w.width; x++) {
-      const c = cellColor(w, x, y);
+      const c = cellColor(w, roads, x, y);
       const shade = 0.97 + hash(x, y + 11) * 0.06;
       vert(x, y, c, shade);
       vert(x, y + 1, c, shade);

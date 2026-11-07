@@ -1,10 +1,15 @@
 import type { Difficulty } from './ai/bot';
-import { Session, type MatchSetup } from './game';
+import { FINALE_SECONDS, Session, type MatchSetup } from './game';
 import { Controls } from './input/controls';
 import { NetLink, newRoomCode } from './net/link';
 import { Lockstep } from './net/lockstep';
 import { GameView } from './render/view';
 import { renderThumbnails } from './render/thumbs';
+import {
+  ABILITIES, ABILITY_TYPES, LOADOUT_SIZE, cleanLoadout, type AbilityType,
+} from './sim/data/defs';
+import { MAPS, MAP_IDS } from './sim/map';
+import type { MapId } from './sim/types';
 import { createWorld } from './sim/world';
 import { GameAudio } from './ui/audio';
 import { Hud } from './ui/hud';
@@ -17,7 +22,33 @@ const showPerf = import.meta.env.DEV || params.has('perf');
 
 const canvas = $<HTMLCanvasElement>('game');
 const audio = new GameAudio();
-const previewWorld = createWorld({ seed: 1 });
+type MapChoice = MapId | 'random';
+
+function load<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function save(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage can be blocked; the choice just will not be remembered.
+  }
+}
+
+let mapChoice: MapChoice = load<MapChoice>('bf-map', 'river');
+if (mapChoice !== 'random' && !MAP_IDS.includes(mapChoice)) mapChoice = 'river';
+let loadout: AbilityType[] = cleanLoadout(load('bf-loadout', null));
+
+const pickMap = (): MapId =>
+  mapChoice === 'random' ? MAP_IDS[Math.floor(Math.random() * MAP_IDS.length)] : mapChoice;
+
+let previewWorld = createWorld({ seed: 1, map: mapChoice === 'random' ? 'river' : mapChoice });
 const view = new GameView(canvas, previewWorld);
 
 let session: Session | null = null;
@@ -26,6 +57,7 @@ let link: NetLink | null = null;
 let myOnlineSide = 0;
 let lockstep: Lockstep | null = null;
 let wantRematch = [false, false];
+let guestLoadout: AbilityType[] = cleanLoadout(null);
 let cancelHost: (() => void) | null = null;
 
 const thumbs = [renderThumbnails(0), renderThumbnails(1)];
@@ -37,8 +69,9 @@ const hud = new Hud(thumbs[0], {
   selectAll: () => session?.selectAll(),
   retreat: () => session?.retreat(),
   clearSelection: () => session?.clearSelection(),
-  toggleMute: () => (audio.muted = !audio.muted),
+  toggleMute: () => audio.cycleMode(),
   jumpTo: (x, z) => controls.jumpTo(x, z),
+  upgrade: (u) => session?.upgrade(u),
 });
 const controls = new Controls(canvas, view, hud, () => session);
 
@@ -66,22 +99,30 @@ function startMatch(setup: MatchSetup, owner: number): void {
 function start(difficulty: Difficulty): void {
   lastDifficulty = difficulty;
   const seed = (Math.random() * 1e9) | 0;
-  startMatch({ kind: 'bot', difficulty, seed, demo }, 0);
+  startMatch({ kind: 'bot', difficulty, seed, demo, map: pickMap(), loadout }, 0);
 }
 
-function beginOnlineMatch(seed: number): void {
+function beginOnlineMatch(seed: number, map: unknown, loadouts: unknown): void {
   if (!link) return;
   const active = link;
   wantRematch = [false, false];
+  const safeMap = MAP_IDS.includes(map as MapId) ? (map as MapId) : 'river';
+  const pair = Array.isArray(loadouts) ? loadouts : [];
   lockstep = new Lockstep(myOnlineSide, (message) => active.send(message));
-  startMatch({ kind: 'online', seed, owner: myOnlineSide, net: lockstep }, myOnlineSide);
+  startMatch({
+    kind: 'online', seed: seed | 0, owner: myOnlineSide, net: lockstep, map: safeMap,
+    loadouts: [cleanLoadout(pair[0]), cleanLoadout(pair[1])],
+  }, myOnlineSide);
+  hud.toast(`Mapa: ${MAPS[safeMap].name}`);
 }
 
 function hostStartsIfReady(): void {
   if (myOnlineSide !== 0 || !wantRematch[0] || !wantRematch[1]) return;
   const seed = crypto.getRandomValues(new Uint32Array(1))[0] | 0;
-  link?.send({ k: 'start', seed });
-  beginOnlineMatch(seed);
+  const map = pickMap();
+  const loadouts: [AbilityType[], AbilityType[]] = [loadout, guestLoadout];
+  link?.send({ k: 'start', seed, map, loadouts });
+  beginOnlineMatch(seed, map, loadouts);
 }
 
 function connect(newLink: NetLink, side: number): void {
@@ -95,16 +136,19 @@ function connect(newLink: NetLink, side: number): void {
   };
   newLink.listen((message) => {
     if (message.k === 'turn') lockstep?.receive(message);
-    else if (message.k === 'start') beginOnlineMatch(message.seed);
-    else if (message.k === 'rematch') {
+    else if (message.k === 'start') beginOnlineMatch(message.seed, message.map, message.loadouts);
+    else if (message.k === 'hello') {
+      guestLoadout = cleanLoadout(message.loadout);
+      wantRematch = [true, true];
+      hostStartsIfReady();
+    } else if (message.k === 'rematch') {
+      if (myOnlineSide === 0) guestLoadout = cleanLoadout(message.loadout);
       wantRematch[1 - myOnlineSide] = true;
       hostStartsIfReady();
     }
   });
-  if (side === 0) {
-    wantRematch = [true, true];
-    hostStartsIfReady();
-  }
+  // The guest says which abilities it brings; the host then starts the match.
+  if (side === 1) newLink.send({ k: 'hello', loadout });
 }
 
 function setOnlineStatus(text: string): void {
@@ -122,6 +166,8 @@ function leaveOnline(): void {
 function showMenu(): void {
   leaveOnline();
   session = null;
+  hud.hideFinale();
+  audio.startMusic(0);
   view.bind(previewWorld, 0);
   $('end').hidden = true;
   $('hud').hidden = true;
@@ -145,8 +191,8 @@ function createRoom(): void {
     $('online-choose').hidden = true;
     $('online-room').hidden = false;
     $('room-code').textContent = code;
-    setOnlineStatus('Esperando a tu rival…');
-  });
+    setOnlineStatus('Esperando a tu rival… Tras compartir, vuelve aquí.');
+  }, setOnlineStatus);
   cancelHost = cancel;
   pending.then((newLink) => {
     cancelHost = null;
@@ -210,7 +256,7 @@ function showResults(s: Session): void {
   again.hidden = false;
   again.disabled = lockstep !== null && link === null;
   again.textContent = 'Revancha';
-  window.setTimeout(() => { $('end').hidden = false; }, 1200);
+  window.setTimeout(() => { $('end').hidden = false; }, FINALE_SECONDS * 1000);
 }
 
 function exposeForTesting(): void {
@@ -231,7 +277,7 @@ $('btn-again').addEventListener('click', () => {
     return;
   }
   wantRematch[myOnlineSide] = true;
-  link?.send({ k: 'rematch' });
+  link?.send({ k: 'rematch', loadout });
   const again = $<HTMLButtonElement>('btn-again');
   again.disabled = true;
   again.textContent = 'Esperando…';
@@ -263,6 +309,7 @@ function loop(nowMs: number): void {
   } else {
     // The menu sits over a slow pan across the empty battlefield.
     view.rig.focus(36 + Math.sin(now * 0.08) * 16, 22);
+    view.rig.dist = 44;
     view.render(previewWorld, 1, now, dt, emptySelection, 0);
   }
 
@@ -286,6 +333,65 @@ function loop(nowMs: number): void {
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+function renderMapChoices(): void {
+  const box = $('maps');
+  box.replaceChildren();
+  const options: [MapChoice, string, string][] = [
+    ...MAP_IDS.map((id): [MapChoice, string, string] => [id, MAPS[id].name, MAPS[id].blurb]),
+    ['random', 'Aleatorio', 'Un mapa distinto cada partida.'],
+  ];
+  for (const [id, name, blurb] of options) {
+    const b = document.createElement('button');
+    b.className = id === mapChoice ? 'pick on' : 'pick';
+    b.textContent = name;
+    b.title = blurb;
+    b.addEventListener('click', () => {
+      mapChoice = id;
+      save('bf-map', id);
+      $('map-blurb').textContent = blurb;
+      if (id !== 'random' && id !== previewWorld.map) {
+        previewWorld = createWorld({ seed: 1, map: id });
+        if (!session) view.bind(previewWorld, 0);
+      }
+      renderMapChoices();
+    });
+    box.append(b);
+    if (id === mapChoice) $('map-blurb').textContent = blurb;
+  }
+}
+
+function renderLoadout(): void {
+  const box = $('loadout');
+  box.replaceChildren();
+  for (const kind of ABILITY_TYPES) {
+    const b = document.createElement('button');
+    const on = loadout.includes(kind);
+    b.className = on ? 'pick on' : 'pick';
+    b.textContent = ABILITIES[kind].name;
+    b.addEventListener('click', () => {
+      if (on) {
+        if (loadout.length <= 1) return;
+        loadout = loadout.filter((k) => k !== kind);
+      } else {
+        // Picking a fourth one drops the oldest pick.
+        loadout = [...loadout, kind].slice(-LOADOUT_SIZE);
+      }
+      $('loadout-blurb').textContent = ABILITIES[kind].blurb;
+      save('bf-loadout', loadout);
+      renderLoadout();
+    });
+    box.append(b);
+  }
+  $('loadout-count').textContent = `${loadout.length}/${LOADOUT_SIZE}`;
+  const ready = loadout.length === LOADOUT_SIZE;
+  document.querySelectorAll<HTMLButtonElement>('[data-diff], #btn-online').forEach((b) => { b.disabled = !ready; });
+}
+
+renderMapChoices();
+renderLoadout();
+audio.startMusic(0);
+document.addEventListener('pointerdown', () => audio.unlock(), { once: true });
 
 const invitedRoom = params.get('sala');
 if (invitedRoom) {

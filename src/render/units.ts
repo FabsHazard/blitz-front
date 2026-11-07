@@ -18,6 +18,32 @@ interface Visual {
   flash: number;
   rotor: number;
   recoil: number;
+  /** 1 right after being hit, fading to 0. */
+  hurt: number;
+  /** Direction the hit pushed it, as an angle on the ground. */
+  hurtDir: number;
+  /** Members drawn last frame, to notice the ones that just fell. */
+  alive: number;
+  x: number;
+  z: number;
+}
+
+interface Fallen {
+  type: UnitType;
+  owner: number;
+  x: number;
+  z: number;
+  angle: number;
+  side: number;
+  t: number;
+}
+
+/** A squad member lost this frame; the view turns vehicles into wrecks. */
+export interface LostMember {
+  type: UnitType;
+  x: number;
+  z: number;
+  heading: number;
 }
 
 const lambert = new THREE.MeshLambertMaterial({ vertexColors: true });
@@ -59,6 +85,9 @@ export class EntityRenderer {
   private buildings = new Map<string, THREE.InstancedMesh>();
   private heads: THREE.InstancedMesh[] = [];
   private visuals = new Map<number, Visual>();
+  private fallen: Fallen[] = [];
+  readonly lost: LostMember[] = [];
+  private euler = new THREE.Euler(0, 0, 0, 'YXZ');
   private blobs: THREE.InstancedMesh;
   private rings: THREE.InstancedMesh;
   private barBack: THREE.InstancedMesh;
@@ -135,6 +164,17 @@ export class EntityRenderer {
 
   reset(): void {
     this.visuals.clear();
+    this.fallen.length = 0;
+    this.lost.length = 0;
+  }
+
+  /** Makes a unit flinch away from a hit; without a source it shakes in place. */
+  hurt(id: number, strength: number, fromX?: number, fromZ?: number): void {
+    const v = this.visuals.get(id);
+    if (!v) return;
+    v.hurt = Math.min(1.4, Math.max(v.hurt, strength));
+    v.hurtDir = fromX === undefined || fromZ === undefined
+      ? Math.random() * 6.28 : Math.atan2(v.z - fromZ, v.x - fromX);
   }
 
   flash(id: number): void {
@@ -155,7 +195,10 @@ export class EntityRenderer {
     let v = this.visuals.get(e.id);
     if (!v) {
       const start = e.owner === 0 ? 0 : Math.PI;
-      v = { heading: start, aim: start, moving: false, flash: 0, rotor: e.id, recoil: 0 };
+      v = {
+        heading: start, aim: start, moving: false, flash: 0, rotor: e.id, recoil: 0,
+        hurt: 0, hurtDir: 0, alive: UNITS[e.type as UnitType]?.members ?? 1, x: e.x / ONE, z: e.y / ONE,
+      };
       this.visuals.set(e.id, v);
     }
     return v;
@@ -185,7 +228,13 @@ export class EntityRenderer {
     const model = this.models.get(`${type}${e.owner}`)!;
     const set = this.getSet(type, e.owner);
     const vis = this.visual(e);
-    const [x, z] = entityPosition(e, alpha);
+    const [px, pz] = entityPosition(e, alpha);
+    vis.x = px;
+    vis.z = pz;
+    vis.hurt = Math.max(0, vis.hurt - dt * 4);
+    const shove = vis.hurt * vis.hurt * 0.16;
+    const x = px + Math.cos(vis.hurtDir) * shove;
+    const z = pz + Math.sin(vis.hurtDir) * shove;
 
     const dx = e.x - e.px;
     const dz = e.y - e.py;
@@ -206,6 +255,19 @@ export class EntityRenderer {
     const alive = Math.max(1, Math.ceil(def.members * e.hp / e.maxHp));
     const cos = Math.cos(vis.heading);
     const sin = Math.sin(vis.heading);
+    for (let i = alive; i < Math.min(vis.alive, def.members); i++) {
+      const [ox, oz] = model.formation[i];
+      const lx = px + ox * cos + oz * sin;
+      const lz = pz - ox * sin + oz * cos;
+      if (def.members >= 3) {
+        this.fallen.push({ type, owner: e.owner, x: lx, z: lz, angle: vis.aim, side: Math.random() < 0.5 ? -1 : 1, t: 0 });
+      } else {
+        this.lost.push({ type, x: lx, z: lz, heading: vis.heading });
+      }
+    }
+    vis.alive = alive;
+    const crouch = def.members >= 3 ? 1 - Math.min(1, vis.hurt) * 0.28 : 1;
+    const rock = type === 'tank' || type === 'truck' ? Math.sin(time * 40) * vis.hurt * 0.08 : 0;
     const bodyAngle = type === 'tank' || type === 'truck' ? vis.heading : vis.aim;
 
     for (let i = 0; i < alive; i++) {
@@ -216,12 +278,13 @@ export class EntityRenderer {
       const bob = walking ? Math.abs(Math.sin(time * 11 + i * 1.7)) * 0.07 : 0;
       const hover = type === 'heli' ? Math.sin(time * 2.2 + e.id) * 0.1 : 0;
       const y = 0.09 + model.altitude + bob + hover;
-      const tilt = type === 'heli' && vis.moving ? 1 : 0;
+      const tilt = (type === 'heli' && vis.moving) || vis.hurt > 0.05 ? 1 : 0;
 
       if (set.hull) {
         if (tilt) {
-          this.q.setFromEuler(new THREE.Euler(0, bodyAngle, -0.16, 'YXZ'));
-          this.m.compose(this.v.set(mx, y, mz), this.q, this.s.set(1, 1, 1));
+          const wobble = type === 'heli' ? Math.sin(time * 30) * vis.hurt * 0.25 : 0;
+          this.q.setFromEuler(this.euler.set(rock, bodyAngle, (type === 'heli' && vis.moving ? -0.16 : 0) + wobble));
+          this.m.compose(this.v.set(mx, y, mz), this.q, this.s.set(1, crouch, 1));
           const index = set.hull.count++;
           set.hull.setMatrixAt(index, this.m);
           set.hull.setColorAt(index, flashing ? this.flashColor : this.white);
@@ -282,6 +345,26 @@ export class EntityRenderer {
     this.barBack.count = this.barFill.count = count + 1;
   }
 
+  /** Soldiers that just fell topple over, lie there a moment and sink away. */
+  private drawFallen(dt: number): void {
+    let keep = 0;
+    for (const f of this.fallen) {
+      f.t += dt;
+      if (f.t > 2.6) continue;
+      this.fallen[keep++] = f;
+      const hull = this.getSet(f.type, f.owner).hull;
+      if (!hull || hull.count >= MEMBER_CAPACITY) continue;
+      const topple = Math.min(1, f.t / 0.3);
+      const sink = f.t > 1.6 ? (f.t - 1.6) * 0.35 : 0;
+      this.q.setFromEuler(this.euler.set(f.side * topple * 1.45, f.angle, 0));
+      this.m.compose(this.v.set(f.x, 0.1 - sink, f.z), this.q, this.s.set(1, 1, 1));
+      const index = hull.count++;
+      hull.setMatrixAt(index, this.m);
+      hull.setColorAt(index, this.color.setRGB(0.7, 0.7, 0.7));
+    }
+    this.fallen.length = keep;
+  }
+
   update(w: World, alpha: number, time: number, dt: number, selection: Set<number>, camera: CameraRig): void {
     for (const set of this.units.values()) {
       for (const role of ROLES) if (set[role]) set[role]!.count = 0;
@@ -307,6 +390,8 @@ export class EntityRenderer {
       }
       if (selected || e.hp < e.maxHp) this.drawBar(e, x, z, camera);
     }
+
+    this.drawFallen(dt);
 
     if (this.visuals.size > w.entities.length + 40) {
       for (const id of this.visuals.keys()) if (!w.byId.has(id)) this.visuals.delete(id);

@@ -3,7 +3,8 @@ import { fx, secs } from '../fixed';
 export type UnitType = 'infantry' | 'antitank' | 'tank' | 'heli' | 'truck';
 export type BuildingType = 'hq' | 'barracks' | 'factory' | 'helipad' | 'refinery' | 'turret';
 export type EntityType = UnitType | BuildingType;
-export type AbilityType = 'airstrike' | 'artillery' | 'paradrop';
+export type AbilityType = 'airstrike' | 'artillery' | 'paradrop' | 'emp' | 'repair' | 'armor';
+export type UpgradeType = 'grenades' | 'plating' | 'missiles' | 'haulers' | 'twinGuns';
 
 export interface UnitDef {
   name: string;
@@ -90,32 +91,90 @@ export const DAMAGE: Partial<Record<EntityType, Record<EntityType, number>>> = {
 
 export interface AbilityDef {
   name: string;
+  /** One line for the loadout picker. */
+  blurb: string;
   cooldown: number;
   startCooldown: number;
   /** Warning time before the first hit; the enemy can see it coming. */
   delay: number;
   radius: number;
+  /** Area shown while aiming and to the enemy; wider than `radius` for scattered shells. */
+  area: number;
   damage: number;
   shells: number;
   shellGap: number;
+  /** Helps the caster's side instead of hurting the enemy. */
+  friendly: boolean;
 }
 
 const ability = (
-  name: string, cooldown: number, start: number, delay: number,
-  radius: number, damage: number, shells = 1, shellGap = 0,
+  name: string, blurb: string, cooldown: number, start: number, delay: number,
+  radius: number, damage: number, options: { shells?: number; gap?: number; area?: number; friendly?: boolean } = {},
 ): AbilityDef => ({
-  name, radius: fx(radius), damage, shells,
+  name, blurb, radius: fx(radius), damage,
+  area: fx(options.area ?? radius),
+  shells: options.shells ?? 1,
   cooldown: secs(cooldown),
   startCooldown: secs(start),
   delay: secs(delay),
-  shellGap: secs(shellGap),
+  shellGap: secs(options.gap ?? 0),
+  friendly: options.friendly ?? false,
 });
 
 export const ABILITIES: Record<AbilityType, AbilityDef> = {
-  airstrike: ability('Ataque aéreo', 75, 45, 2, 3.5, 300),
-  artillery: ability('Artillería', 50, 30, 1, 1.8, 130, 6, 0.4),
-  paradrop: ability('Paracaidistas', 90, 60, 2, 1.5, 0),
+  airstrike: ability('Ataque aéreo', 'Un bombardeo enorme en una zona.', 75, 45, 2, 3.5, 300),
+  artillery: ability('Artillería', '6 proyectiles repartidos por el área.', 50, 30, 1, 1.8, 130, { shells: 6, gap: 0.4, area: 4.5 }),
+  paradrop: ability('Paracaidistas', '2 escuadrones de infantería donde quieras.', 90, 60, 2, 1.5, 0),
+  emp: ability('Pulso EMP', 'Paraliza al enemigo 4 s: ni se mueve ni dispara.', 60, 40, 1, 4, 0),
+  repair: ability('Reparación', 'Cura 45% a tus unidades y 15% a edificios.', 55, 35, 1, 4.5, 45, { friendly: true }),
+  armor: ability('Blindados', 'Lanza un escuadrón de tanques desde el aire.', 110, 75, 3, 1.5, 0),
 };
+
+export const ABILITY_TYPES = Object.keys(ABILITIES) as AbilityType[];
+export const LOADOUT_SIZE = 3;
+export const DEFAULT_LOADOUT: AbilityType[] = ['airstrike', 'artillery', 'paradrop'];
+export const EMP_STUN = secs(4);
+
+/** Keeps a loadout from the network or storage to 3 distinct known abilities. */
+export function cleanLoadout(value: unknown): AbilityType[] {
+  if (!Array.isArray(value)) return [...DEFAULT_LOADOUT];
+  const picked: AbilityType[] = [];
+  for (const kind of value) {
+    if (typeof kind === 'string' && kind in ABILITIES && !picked.includes(kind as AbilityType)) {
+      picked.push(kind as AbilityType);
+    }
+  }
+  for (const kind of DEFAULT_LOADOUT) {
+    if (picked.length >= LOADOUT_SIZE) break;
+    if (!picked.includes(kind)) picked.push(kind);
+  }
+  return picked.slice(0, LOADOUT_SIZE);
+}
+
+export interface UpgradeDef {
+  name: string;
+  blurb: string;
+  building: BuildingType;
+  cost: number;
+  ticks: number;
+}
+
+const upgrade = (name: string, blurb: string, building: BuildingType, cost: number, seconds: number): UpgradeDef =>
+  ({ name, blurb, building, cost, ticks: secs(seconds) });
+
+export const UPGRADES: Record<UpgradeType, UpgradeDef> = {
+  grenades: upgrade('Lanzagranadas', 'Infantería: +30% de daño.', 'barracks', 150, 25),
+  plating: upgrade('Blindaje reactivo', 'Tanques: -25% de daño recibido.', 'factory', 200, 30),
+  missiles: upgrade('Misiles guiados', 'Helicópteros: +30% de daño.', 'helipad', 200, 30),
+  haulers: upgrade('Camiones grandes', 'Refinerías: +50% de carga.', 'refinery', 150, 25),
+  twinGuns: upgrade('Cañón doble', 'Torretas: +50% de daño.', 'turret', 120, 20),
+};
+
+export const UPGRADE_TYPES = Object.keys(UPGRADES) as UpgradeType[];
+
+/** The upgrade researched at a building type, if any. */
+export const upgradeFor = (building: BuildingType): UpgradeType | undefined =>
+  UPGRADE_TYPES.find((u) => UPGRADES[u].building === building);
 
 export const BALANCE = {
   startSupplies: 400,

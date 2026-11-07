@@ -1,4 +1,6 @@
-import type { AbilityType, EntityType, UnitType } from './data/defs';
+import type { AbilityType, EntityType, UnitType, UpgradeType } from './data/defs';
+
+export type MapId = 'river' | 'canyon' | 'lakes';
 
 export const enum Order {
   Idle = 0,
@@ -50,6 +52,8 @@ export interface Entity {
   /** Truck: 0 loading, 1 going to HQ, 2 going back. */
   phase: number;
   cargo: number;
+  /** Ticks left paralysed by an EMP. */
+  stun: number;
 }
 
 export interface PlayerStats {
@@ -67,6 +71,10 @@ export interface Player {
   rallyY: number;
   stats: PlayerStats;
   cooldowns: Record<AbilityType, number>;
+  /** The 3 abilities this player brought; the others cannot be used. */
+  loadout: AbilityType[];
+  /** 0 not started, positive ticks left, -1 finished. */
+  research: Record<UpgradeType, number>;
   /** Far behind on the board: earns more and recharges abilities faster. */
   underdog: boolean;
 }
@@ -105,9 +113,11 @@ export type GameEvent =
   | { k: 'deliver'; owner: number; amount: number; x: number; y: number }
   | { k: 'suddenDeath' }
   | { k: 'strike'; kind: AbilityType; owner: number; x: number; y: number; delay: number }
-  | { k: 'blast'; kind: AbilityType; x: number; y: number; radius: number };
+  | { k: 'blast'; kind: AbilityType; x: number; y: number; radius: number }
+  | { k: 'researched'; owner: number; upgrade: UpgradeType };
 
 export interface World {
+  map: MapId;
   tick: number;
   rng: number;
   width: number;
@@ -135,4 +145,6 @@ export interface World {
 export interface GameConfig {
   seed: number;
   incomeMult?: [number, number];
+  map?: MapId;
+  loadouts?: [AbilityType[], AbilityType[]];
 }

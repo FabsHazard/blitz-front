@@ -4,6 +4,7 @@ import { approachCell, cellCenterX, cellCenterY } from '../pathfinding';
 import { Order, type Entity, type World } from '../types';
 import { updateUnderdogs } from './abilities';
 import { spawnUnit } from './production';
+import { hasUpgrade } from './research';
 
 export function earn(w: World, owner: number, amount: number): number {
   const p = w.players[owner];
@@ -42,6 +43,7 @@ function updateTruck(w: World, truck: Entity): void {
     if (--truck.timer > 0) return;
     const cells = idiv(dist(refinery.x, refinery.y, hq.x, hq.y), fx(1));
     truck.cargo = BALANCE.truckBaseCargo + cells * BALANCE.truckCargoPerCell;
+    if (hasUpgrade(w, truck.owner, 'haulers')) truck.cargo = idiv(truck.cargo * 150, 100);
     truck.phase = 1;
     sendTruck(w, truck, hq);
   } else if (truck.phase === 1) {

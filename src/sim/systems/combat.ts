@@ -4,6 +4,7 @@ import {
 import { dist, fx, idiv } from '../fixed';
 import { randInt } from '../rng';
 import { Order, type Entity, type World } from '../types';
+import { hasUpgrade } from './research';
 
 const RETARGET_TICKS = 5;
 
@@ -70,10 +71,18 @@ export function targetingSystem(w: World): void {
   }
 }
 
-function damageOf(e: Entity): number {
+function baseDamage(e: Entity): number {
   if (isBuildingType(e.type)) return BUILDINGS[e.type].dmg;
   // Worn-down squads have fewer members firing.
   return idiv(UNITS[e.type].dmg * (50 + idiv(50 * e.hp, e.maxHp)), 100);
+}
+
+function damageOf(w: World, e: Entity): number {
+  const base = baseDamage(e);
+  if (e.type === 'infantry' && hasUpgrade(w, e.owner, 'grenades')) return idiv(base * 130, 100);
+  if (e.type === 'heli' && hasUpgrade(w, e.owner, 'missiles')) return idiv(base * 130, 100);
+  if (e.type === 'turret' && hasUpgrade(w, e.owner, 'twinGuns')) return idiv(base * 150, 100);
+  return base;
 }
 
 function cooldownOf(e: Entity): number {
@@ -82,7 +91,8 @@ function cooldownOf(e: Entity): number {
 
 export function applyDamage(w: World, target: Entity, amount: number, attacker?: Entity): void {
   const wasAlive = target.hp > 0;
-  target.hp -= amount;
+  const plated = target.type === 'tank' && hasUpgrade(w, target.owner, 'plating');
+  target.hp -= plated ? Math.max(1, idiv(amount * 75, 100)) : amount;
   if (wasAlive && target.hp <= 0 && attacker) {
     w.players[attacker.owner].stats.kills++;
   }
@@ -90,6 +100,10 @@ export function applyDamage(w: World, target: Entity, amount: number, attacker?:
 
 export function fireSystem(w: World): void {
   for (const e of w.entities) {
+    if (e.stun > 0) {
+      e.stun--;
+      continue;
+    }
     if (e.cooldown > 0) e.cooldown--;
     if (e.cooldown > 0 || !e.targetId || !isArmed(e)) continue;
     const target = w.byId.get(e.targetId);
@@ -97,7 +111,7 @@ export function fireSystem(w: World): void {
     e.cooldown = cooldownOf(e);
     const pct = DAMAGE[e.type]![target.type];
     const variance = randInt(w, 92, 108);
-    const amount = Math.max(1, idiv(idiv(damageOf(e) * pct, 100) * variance, 100));
+    const amount = Math.max(1, idiv(idiv(damageOf(w, e) * pct, 100) * variance, 100));
     applyDamage(w, target, amount, e);
     w.events.push({ k: 'shot', from: e.id, to: target.id, type: e.type, x: target.x, y: target.y });
     w.events.push({ k: 'hit', id: target.id, x: target.x, y: target.y });

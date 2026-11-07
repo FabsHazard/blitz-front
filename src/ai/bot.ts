@@ -1,8 +1,12 @@
 import { canPlace, trainBuilding, type Command } from '../sim/commands';
-import { BALANCE, BUILDINGS, UNITS, type BuildingType, type UnitType } from '../sim/data/defs';
+import {
+  ABILITY_TYPES, BALANCE, BUILDINGS, LOADOUT_SIZE, UNITS, UPGRADES, UPGRADE_TYPES,
+  type AbilityType, type BuildingType, type UnitType,
+} from '../sim/data/defs';
 import { fx, secs, toCell } from '../sim/fixed';
 import { randInt } from '../sim/rng';
 import { findHq } from '../sim/systems/economy';
+import { canResearchAt } from '../sim/systems/research';
 import { squadCount } from '../sim/systems/production';
 import { Order, type ControlPoint, type Entity, type World } from '../sim/types';
 
@@ -15,18 +19,28 @@ interface Profile {
   incomeMult: number;
   counters: boolean;
   abilities: boolean;
+  upgrades: boolean;
 }
 
 export const PROFILES: Record<Difficulty, Profile> = {
-  easy: { thinkTicks: secs(3), waveSize: 5, waveTicks: secs(75), incomeMult: 80, counters: false, abilities: false },
-  normal: { thinkTicks: secs(1.5), waveSize: 6, waveTicks: secs(55), incomeMult: 100, counters: true, abilities: true },
-  hard: { thinkTicks: secs(0.8), waveSize: 7, waveTicks: secs(40), incomeMult: 125, counters: true, abilities: true },
+  easy: { thinkTicks: secs(3), waveSize: 5, waveTicks: secs(75), incomeMult: 80, counters: false, abilities: false, upgrades: false },
+  normal: { thinkTicks: secs(1.5), waveSize: 6, waveTicks: secs(55), incomeMult: 100, counters: true, abilities: true, upgrades: true },
+  hard: { thinkTicks: secs(0.8), waveSize: 7, waveTicks: secs(40), incomeMult: 125, counters: true, abilities: true, upgrades: true },
 };
 
 const BUILD_ORDER: BuildingType[] = [
   'barracks', 'refinery', 'factory', 'refinery', 'turret', 'helipad',
   'refinery', 'barracks', 'factory', 'turret',
 ];
+
+/** A random loadout for a bot, drawn from its own seeded stream. */
+export function botLoadout(seed: number): AbilityType[] {
+  const r = { rng: seed | 0 };
+  const pool = [...ABILITY_TYPES];
+  const picked: AbilityType[] = [];
+  while (picked.length < LOADOUT_SIZE) picked.push(pool.splice(randInt(r, 0, pool.length - 1), 1)[0]);
+  return picked;
+}
 
 const distSq = (a: { x: number; y: number }, b: { x: number; y: number }): number => {
   const dx = a.x - b.x;
@@ -56,6 +70,7 @@ export class Bot {
     if (!hq) return commands;
     const budget = { left: w.players[this.player].supplies };
     this.planBuilding(w, hq, budget, commands);
+    if (this.profile.upgrades) this.planResearch(w, budget, commands);
     this.planTraining(w, budget, commands);
     this.planArmy(w, hq, commands);
     if (this.profile.abilities) this.planAbilities(w, commands);
@@ -166,18 +181,55 @@ export class Bot {
     return best;
   }
 
+  /** Researches once the build order is done and there is money to spare. */
+  private planResearch(w: World, budget: { left: number }, out: Command[]): void {
+    if (this.buildStep < 4 || this.army(w).length < 4) return;
+    const research = w.players[this.player].research;
+    for (const u of UPGRADE_TYPES) {
+      const cost = UPGRADES[u].cost;
+      if (research[u] !== 0 || budget.left < cost + 150 || !canResearchAt(w, this.player, u)) continue;
+      out.push({ t: 'upgrade', p: this.player, u });
+      budget.left -= cost;
+      return;
+    }
+  }
+
+  /** Own squads near the most damaged one, if they are worth healing. */
+  private woundedGroup(w: World): Entity | null {
+    const army = this.army(w);
+    let best: Entity | null = null;
+    let bestScore = 0;
+    const reach = fx(4) * fx(4);
+    for (const e of army) {
+      let missing = 0;
+      for (const o of army) if (distSq(o, e) <= reach) missing += o.maxHp - o.hp;
+      if (missing > bestScore) {
+        bestScore = missing;
+        best = e;
+      }
+    }
+    return bestScore >= 500 ? best : null;
+  }
+
   private planAbilities(w: World, out: Command[]): void {
-    const cooldowns = w.players[this.player].cooldowns;
+    const player = w.players[this.player];
+    const ready = (a: AbilityType) => player.loadout.includes(a) && player.cooldowns[a] === 0;
     const p = this.player;
     const dense = this.densestEnemy(w);
-    if (dense && dense.count >= 3 && cooldowns.airstrike === 0) {
+    if (dense && dense.count >= 3 && ready('airstrike')) {
       out.push({ t: 'ability', p, a: 'airstrike', x: dense.target.x, y: dense.target.y });
-    } else if (dense && dense.count >= 2 && cooldowns.artillery === 0) {
+    } else if (dense && dense.count >= 3 && ready('emp')) {
+      out.push({ t: 'ability', p, a: 'emp', x: dense.target.x, y: dense.target.y });
+    } else if (dense && dense.count >= 2 && ready('artillery')) {
       out.push({ t: 'ability', p, a: 'artillery', x: dense.target.x, y: dense.target.y });
     }
+    const wounded = ready('repair') ? this.woundedGroup(w) : null;
+    if (wounded) out.push({ t: 'ability', p, a: 'repair', x: wounded.x, y: wounded.y });
     const open = w.points.find((c) => c.owner !== p && !c.contested);
-    if (open && cooldowns.paradrop === 0) {
+    if (open && ready('paradrop')) {
       out.push({ t: 'ability', p, a: 'paradrop', x: open.x, y: open.y });
+    } else if (open && ready('armor')) {
+      out.push({ t: 'ability', p, a: 'armor', x: open.x, y: open.y });
     }
   }
 

@@ -25,6 +25,15 @@
     <div id="toast"></div>
     <div id="hint" hidden></div>
     <div id="waiting" hidden>Esperando al rival…</div>
+    <div id="upgrade" hidden>
+      <b id="upgrade-name"></b>
+      <small id="upgrade-blurb"></small>
+      <div class="row">
+        <button id="upgrade-buy" class="wide primary"></button>
+        <button id="upgrade-close" aria-label="Cerrar">✕</button>
+      </div>
+    </div>
+    <div id="finale" hidden></div>
     <div id="abilities"></div>
     <div id="side">
       <button id="btn-all" class="round">Todos</button>
@@ -38,20 +47,31 @@
   </div>
 
   <section id="menu" class="screen">
-    <div class="card">
-      <h1>Blitz<span>Front</span></h1>
-      <p class="tag">Guerra relámpago de bolsillo. Partidas de hasta 6 minutos.</p>
-      <ol class="how">
-        <li><b>Construye</b> arrastrando edificios al mapa.</li>
-        <li><b>Toca</b> un escuadrón y luego a dónde ir o a quién atacar.</li>
-        <li><b>Gana</b> destruyendo el Cuartel General o manteniendo los 3 puntos.</li>
-      </ol>
-      <div class="diff">
-        <button data-diff="easy">Fácil</button>
-        <button data-diff="normal" class="primary">Normal</button>
-        <button data-diff="hard">Difícil</button>
+    <div class="card menu">
+      <div class="intro">
+        <h1>Blitz<span>Front</span></h1>
+        <p class="tag">Guerra relámpago de bolsillo. Partidas de hasta 6 minutos.</p>
+        <ol class="how">
+          <li><b>Construye</b> arrastrando edificios al mapa.</li>
+          <li><b>Toca</b> un escuadrón y luego a dónde ir o a quién atacar.</li>
+          <li><b>Mejora</b> tocando un edificio tuyo.</li>
+          <li><b>Gana</b> destruyendo el Cuartel General o manteniendo los 3 puntos.</li>
+        </ol>
       </div>
-      <button id="btn-online" class="wide">1 contra 1 online</button>
+      <div class="setup">
+        <p class="label">Mapa</p>
+        <div id="maps" class="picks"></div>
+        <p id="map-blurb" class="hint-line"></p>
+        <p class="label">Habilidades <span id="loadout-count">3/3</span></p>
+        <div id="loadout" class="picks"></div>
+        <p id="loadout-blurb" class="hint-line">Elige 3 para llevar a la partida.</p>
+        <div class="diff">
+          <button data-diff="easy">Fácil</button>
+          <button data-diff="normal" class="primary">Normal</button>
+          <button data-diff="hard">Difícil</button>
+        </div>
+        <button id="btn-online" class="wide">1 contra 1 online</button>
+      </div>
     </div>
   </section>
 
@@ -59,7 +79,7 @@
     <div class="card">
       <h1>1 contra 1</h1>
       <div id="online-choose">
-        <p class="tag">Crea una sala y pásale el enlace a tu rival.</p>
+        <p class="tag">Crea una sala y pásale el enlace a tu rival. Quien crea la sala elige el mapa; cada uno lleva sus habilidades.</p>
         <button id="btn-create" class="wide primary">Crear sala</button>
         <div class="join">
           <input id="room-input" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CÓDIGO" aria-label="Código de sala" />

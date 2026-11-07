@@ -206,6 +206,11 @@ export class Controls {
       s.setSelection([own.id]);
       return;
     }
+    this.hud.hideUpgrade();
+    if (s.selection.size === 0) {
+      const mine = this.pick(px, py, (e) => e.owner === s.owner && e.isBuilding);
+      if (mine && s.inspect(mine)) return;
+    }
     this.order(px, py);
   }
 
@@ -330,8 +335,8 @@ export class Controls {
     const g = this.view.rig.ground(px, py - FINGER_OFFSET, this.view.width, this.view.height);
     if (!g || g.x < 0 || g.z < 0 || g.x >= s.world.width || g.z >= s.world.height) return;
     this.aimPoint = [g.x, g.z];
-    const radius = kind === 'artillery' ? 4.5 : ABILITIES[kind].radius / ONE;
-    this.view.showAim(g.x, g.z, radius);
+    const def = ABILITIES[kind];
+    this.view.showAim(g.x, g.z, def.area / ONE, def.friendly ? '#7dffb0' : kind === 'emp' ? '#7fd8ff' : '#ffd65c');
   }
 
   private finishAim(): void {
