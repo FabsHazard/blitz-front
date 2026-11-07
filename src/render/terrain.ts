@@ -92,7 +92,8 @@ function plinth(w: World): THREE.Mesh {
   return new THREE.Mesh(b.build(), new THREE.MeshLambertMaterial({ vertexColors: true }));
 }
 
-function bridges(w: World): THREE.Mesh {
+function bridges(w: World): THREE.Object3D {
+  if (!w.terrain.includes(Terrain.Bridge)) return new THREE.Group();
   const b = new ModelBuilder();
   for (let y = 0; y < w.height; y++) {
     for (let x = 0; x < w.width; x++) {

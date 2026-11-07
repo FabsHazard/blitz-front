@@ -256,7 +256,10 @@ function showResults(s: Session): void {
   again.hidden = false;
   again.disabled = lockstep !== null && link === null;
   again.textContent = 'Revancha';
-  window.setTimeout(() => { $('end').hidden = false; }, FINALE_SECONDS * 1000);
+  window.setTimeout(() => {
+    $('finale').hidden = true;
+    $('end').hidden = false;
+  }, FINALE_SECONDS * 1000);
 }
 
 function exposeForTesting(): void {

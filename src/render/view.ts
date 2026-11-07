@@ -260,7 +260,7 @@ export class GameView {
     const m = new THREE.Matrix4();
     let count = 0;
     for (const s of w.strikes) {
-      if (count >= 8) break;
+      if (count >= 8 || w.winner !== -1) break;
       const radius = ABILITIES[s.kind].area / ONE;
       const pulse = 1 + Math.sin(time * 16) * 0.05;
       m.makeScale(radius * pulse, 1, radius * pulse);
